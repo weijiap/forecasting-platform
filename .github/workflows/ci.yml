@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality:
+    name: Code Quality and Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Check code formatting
+        run: uv run python -m ruff format --check .
+
+      - name: Run lint checks
+        run: uv run python -m ruff check .
+      
+      - name: Run type checks
+        run: uv run python -m mypy src scripts tests
+
+      - name: Run tests
+        run: uv run python -m pytest
+
+  docker-build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: quality
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Build Docker image
+        run: docker build -t forecasting-platform:ci .
