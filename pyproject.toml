@@ -7,6 +7,8 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi[standard]>=0.139.1",
     "joblib>=1.5.3",
+    "pandas>=3.0.5",
+    "pyarrow>=25.0.0",
     "scikit-learn>=1.9.0",
 ]
 
@@ -14,6 +16,7 @@ dependencies = [
 dev = [
     "httpx>=0.28.1",
     "mypy>=2.3.0",
+    "pandas-stubs>=3.0.5.260730",
     "pre-commit>=4.6.1",
     "pytest>=9.1.1",
     "ruff>=0.16.0",
@@ -56,12 +59,3 @@ warn_unused_configs = true
 check_untyped_defs = true
 disallow_untyped_defs = true
 
-[[tool.mypy.overrides]]
-module = [
-    "joblib",
-    "sklearn.ensemble",
-    "sklearn.datasets",
-    "sklearn.metrics",
-    "sklearn.model_selection",
-]
-ignore_missing_imports = true
