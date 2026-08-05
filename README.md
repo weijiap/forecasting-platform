@@ -223,7 +223,3 @@ Highlights include:
 - Forecast comparison dashboard
 
 ---
-
-# License
-
-MIT License
