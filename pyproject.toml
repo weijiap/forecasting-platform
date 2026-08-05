@@ -10,6 +10,7 @@ dependencies = [
     "pandas>=3.0.5",
     "pyarrow>=25.0.0",
     "scikit-learn>=1.9.0",
+    "streamlit>=1.59.1",
 ]
 
 [dependency-groups]
@@ -61,7 +62,6 @@ disallow_untyped_defs = true
 
 [[tool.mypy.overrides]]
 module = [
-    "sklearn",
     "sklearn.*",
 ]
 ignore_missing_imports = true

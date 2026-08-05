@@ -15,7 +15,7 @@ def test_load_csv() -> None:
 
     assert isinstance(result, pd.DataFrame)
     assert list(result.columns) == ["date", "sales"]
-    assert len(result) == 5
+    assert len(result) == 120
 
 
 def test_missing_file_raises_error() -> None:
