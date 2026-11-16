@@ -44,6 +44,20 @@ def evaluate_model(
     )
 
 
+def evaluate_predictions(
+    model_name: str,
+    y_true: pd.Series,
+    y_pred: pd.Series,
+) -> ModelEvaluation:
+    """Score predictions that have already been generated."""
+
+    return ModelEvaluation(
+        model_name=model_name,
+        rmse=float(mean_squared_error(y_true, y_pred) ** 0.5),
+        mae=float(mean_absolute_error(y_true, y_pred)),
+    )
+
+
 def select_best_model(
     evaluations: list[ModelEvaluation],
 ) -> ModelEvaluation:

@@ -2,21 +2,64 @@ from io import BytesIO
 from typing import Annotated, cast
 
 import pandas as pd
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 
 from forecasting_platform.api.schemas import (
+    MAX_HORIZON,
+    ForecastPoint,
     ForecastRequest,
     ForecastSummaryResponse,
     ForecastUploadResponse,
     HealthResponse,
+    ModelScore,
 )
-from forecasting_platform.pipeline import run_forecast_pipeline
+from forecasting_platform.pipeline import ForecastPipelineResult, run_forecast_pipeline
+
+API_VERSION = "0.2.0"
 
 app = FastAPI(
     title="AutoForecast Lab API",
     description="API for automated time-series forecasting.",
-    version="0.1.0",
+    version=API_VERSION,
 )
+
+
+def _summarize(
+    result: ForecastPipelineResult,
+    timestamp_column: str,
+) -> ForecastSummaryResponse:
+    """Convert pipeline output into the API response."""
+
+    holdout = {evaluation.model_name: evaluation for evaluation in result.holdout}
+
+    benchmarks = [
+        ModelScore(
+            model=backtest.model_name,
+            backtest_rmse=backtest.rmse,
+            backtest_mae=backtest.mae,
+            holdout_rmse=holdout[backtest.model_name].rmse,
+            holdout_mae=holdout[backtest.model_name].mae,
+        )
+        for backtest in result.backtest
+    ]
+
+    future_forecast = [
+        ForecastPoint(timestamp=str(timestamp.date()), forecast=float(value))
+        for timestamp, value in zip(
+            result.future_forecast[timestamp_column],
+            result.future_forecast["forecast"],
+            strict=True,
+        )
+    ]
+
+    return ForecastSummaryResponse(
+        model=result.selected_model,
+        rmse=result.evaluation.rmse,
+        mae=result.evaluation.mae,
+        forecast_rows=len(result.forecast),
+        benchmarks=benchmarks,
+        future_forecast=future_forecast,
+    )
 
 
 @app.get("/")
@@ -39,7 +82,7 @@ def health_check() -> HealthResponse:
     return HealthResponse(
         status="healthy",
         service="forecasting-platform",
-        version="0.1.0",
+        version=API_VERSION,
     )
 
 
@@ -50,7 +93,7 @@ def health_check() -> HealthResponse:
 def forecast_summary(
     request: ForecastRequest,
 ) -> ForecastSummaryResponse:
-    """Run the forecasting pipeline and return summary metrics."""
+    """Run the forecasting pipeline and return metrics and future forecasts."""
 
     if len(request.timestamps) != len(request.values):
         raise HTTPException(
@@ -70,6 +113,7 @@ def forecast_summary(
             df=df,
             target_column=request.target_column,
             timestamp_column=request.timestamp_column,
+            horizon=request.horizon,
         )
     except (KeyError, ValueError) as exc:
         raise HTTPException(
@@ -77,12 +121,7 @@ def forecast_summary(
             detail=str(exc),
         ) from exc
 
-    return ForecastSummaryResponse(
-        model=result.evaluation.model_name,
-        rmse=result.evaluation.rmse,
-        mae=result.evaluation.mae,
-        forecast_rows=len(result.forecast),
-    )
+    return _summarize(result, request.timestamp_column)
 
 
 @app.post(
@@ -93,6 +132,7 @@ async def forecast_upload(
     file: Annotated[UploadFile, File()],
     timestamp_column: str = "date",
     target_column: str = "sales",
+    horizon: Annotated[int, Query(ge=1, le=MAX_HORIZON)] = 14,
 ) -> ForecastUploadResponse:
     """Upload a CSV file and run the forecasting pipeline."""
 
@@ -111,6 +151,7 @@ async def forecast_upload(
             df=df,
             target_column=target_column,
             timestamp_column=timestamp_column,
+            horizon=horizon,
         )
     except (KeyError, ValueError) as exc:
         raise HTTPException(
@@ -126,10 +167,9 @@ async def forecast_upload(
         forecast_records.to_dict(orient="records"),
     )
 
+    summary = _summarize(result, timestamp_column)
+
     return ForecastUploadResponse(
-        model=result.evaluation.model_name,
-        rmse=result.evaluation.rmse,
-        mae=result.evaluation.mae,
-        forecast_rows=len(result.forecast),
+        **summary.model_dump(),
         forecast=forecast_data,
     )

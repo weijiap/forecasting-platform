@@ -1,5 +1,17 @@
 import pandas as pd
 
+LAGS: tuple[int, ...] = (1, 7)
+ROLLING_WINDOWS: tuple[int, ...] = (7, 14)
+
+# Rows lost at the start of the series before every feature is defined.
+FEATURE_WARMUP_ROWS = max(*LAGS, *ROLLING_WINDOWS)
+
+
+def lag_column_name(target_column: str, lag: int) -> str:
+    """Return the name of the lag feature for a target column."""
+
+    return f"{target_column}_lag_{lag}"
+
 
 def create_features(
     df: pd.DataFrame,
@@ -11,13 +23,13 @@ def create_features(
     result = create_lag_features(
         df,
         target_column=target_column,
-        lags=[1, 7],
+        lags=list(LAGS),
     )
 
     result = create_rolling_features(
         result,
         target_column=target_column,
-        windows=[7, 14],
+        windows=list(ROLLING_WINDOWS),
     )
 
     result = create_calendar_features(
@@ -38,7 +50,7 @@ def create_lag_features(
     result = df.copy()
 
     for lag in lags:
-        result[f"{target_column}_lag_{lag}"] = result[target_column].shift(lag)
+        result[lag_column_name(target_column, lag)] = result[target_column].shift(lag)
 
     return result
 

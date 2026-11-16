@@ -13,7 +13,7 @@ st.title("AutoForecast Lab")
 st.markdown(
     """
 Automatically validate a time-series dataset, engineer forecasting features,
-train a machine learning model, and generate downloadable forecasts.
+compare models against naive baselines, and generate downloadable forecasts.
 """
 )
 with st.expander("About this application"):
@@ -26,11 +26,11 @@ with st.expander("About this application"):
 
         • Feature engineering
 
-        • Time-series model training
+        • Walk-forward model selection against naive baselines
 
-        • Forecast evaluation
+        • Holdout evaluation
 
-        • Interactive visualization
+        • Multi-step forecasts beyond the last observation
 
         • Forecast export
         """
@@ -50,6 +50,13 @@ timestamp_column = st.sidebar.text_input(
 target_column = st.sidebar.text_input(
     "Target column",
     value="sales",
+)
+
+horizon = st.sidebar.slider(
+    "Forecast horizon (periods)",
+    min_value=1,
+    max_value=90,
+    value=14,
 )
 
 if uploaded_file is not None:
@@ -97,22 +104,23 @@ if uploaded_file is not None:
 
     if st.button("Run Forecast"):
         try:
-            with st.spinner("Training model and generating forecast..."):
+            with st.spinner("Comparing models and generating forecast..."):
                 result = run_forecast_pipeline(
                     df=df,
                     target_column=target_column,
                     timestamp_column=timestamp_column,
+                    horizon=horizon,
                 )
 
             st.success("Forecast completed!")
 
-            st.subheader("Model Performance")
+            st.subheader("Model Performance (holdout)")
 
             model_column, rmse_column, mae_column = st.columns(3)
 
             model_column.metric(
-                "Model",
-                result.evaluation.model_name,
+                "Selected model",
+                result.selected_model,
             )
 
             rmse_column.metric(
@@ -125,7 +133,33 @@ if uploaded_file is not None:
                 f"{result.evaluation.mae:.3f}",
             )
 
-            st.subheader("Actual vs. Predicted")
+            st.subheader("Model Comparison")
+            st.caption(
+                "Models are selected on walk-forward validation within the "
+                "training period; the holdout is used only for reporting."
+            )
+
+            holdout = {e.model_name: e for e in result.holdout}
+            comparison = pd.DataFrame(
+                [
+                    {
+                        "model": b.model_name,
+                        "backtest_rmse": round(b.rmse, 3),
+                        "backtest_mae": round(b.mae, 3),
+                        "holdout_rmse": round(holdout[b.model_name].rmse, 3),
+                        "holdout_mae": round(holdout[b.model_name].mae, 3),
+                    }
+                    for b in result.backtest
+                ]
+            ).sort_values("backtest_rmse")
+
+            st.dataframe(
+                comparison,
+                width="stretch",
+                hide_index=True,
+            )
+
+            st.subheader("Holdout: Actual vs. Predicted")
 
             chart_data = result.forecast.set_index(timestamp_column)[
                 ["actual", "prediction"]
@@ -133,19 +167,36 @@ if uploaded_file is not None:
 
             st.line_chart(chart_data)
 
-            st.subheader("Forecast Results")
+            st.subheader(f"Forecast: next {horizon} periods")
 
-            st.dataframe(
-                result.forecast,
-                width="stretch",
+            history = df[[timestamp_column, target_column]].copy()
+            history[timestamp_column] = pd.to_datetime(history[timestamp_column])
+            history = history.sort_values(timestamp_column).tail(90)
+
+            future_chart = pd.concat(
+                [
+                    history.set_index(timestamp_column).rename(
+                        columns={target_column: "history"}
+                    ),
+                    result.future_forecast.set_index(timestamp_column),
+                ]
             )
 
-            forecast_csv = result.forecast.to_csv(index=False)
+            st.line_chart(future_chart)
 
-            st.download_button(
-                label="Download Forecast CSV",
-                data=forecast_csv,
-                file_name="forecast.csv",
+            download_col1, download_col2 = st.columns(2)
+
+            download_col1.download_button(
+                label="Download Holdout Predictions CSV",
+                data=result.forecast.to_csv(index=False),
+                file_name="holdout_predictions.csv",
+                mime="text/csv",
+            )
+
+            download_col2.download_button(
+                label="Download Future Forecast CSV",
+                data=result.future_forecast.to_csv(index=False),
+                file_name="future_forecast.csv",
                 mime="text/csv",
             )
 

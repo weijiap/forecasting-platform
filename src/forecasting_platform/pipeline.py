@@ -2,20 +2,25 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from forecasting_platform.features import create_features
-from forecasting_platform.forecasting import generate_predictions
-from forecasting_platform.training import (
-    TrainerConfig,
-    prepare_training_data,
-    train_random_forest,
+from forecasting_platform.features import FEATURE_WARMUP_ROWS, create_features
+from forecasting_platform.forecasting import recursive_forecast
+from forecasting_platform.frequency import infer_step
+from forecasting_platform.preprocessing import prepare_series
+from forecasting_platform.training import prepare_training_data
+from forecasting_platform.training.backtest import (
+    backtest_forecaster,
+    make_backtest_splits,
 )
 from forecasting_platform.training.benchmark import (
     ModelEvaluation,
-    evaluate_model,
+    evaluate_predictions,
+    select_best_model,
 )
-from forecasting_platform.training.dataset import TrainingResult
+from forecasting_platform.training.models import Forecaster, build_default_forecasters
 from forecasting_platform.training.splitter import split_time_series
 from forecasting_platform.validation import ValidationReport, validate_dataframe
+
+MIN_TRAINING_ROWS = 30
 
 
 @dataclass(frozen=True)
@@ -23,26 +28,60 @@ class ForecastPipelineResult:
     """Outputs produced by the forecasting pipeline."""
 
     validation_report: ValidationReport
-    training_result: TrainingResult
+    backtest: list[ModelEvaluation]
+    holdout: list[ModelEvaluation]
+    selected_model: str
     evaluation: ModelEvaluation
     predictions: pd.Series
     forecast: pd.DataFrame
+    future_forecast: pd.DataFrame
+    train_rows: int
 
 
 def run_forecast_pipeline(
     df: pd.DataFrame,
     target_column: str,
     timestamp_column: str,
+    test_size: int = 30,
+    horizon: int = 14,
+    forecasters: list[Forecaster] | None = None,
 ) -> ForecastPipelineResult:
-    """Run the complete forecasting pipeline."""
+    """Run the complete forecasting pipeline.
+
+    1. Validate and sort the series, then build lag, rolling and calendar
+       features.
+    2. Hold out the last ``test_size`` rows.
+    3. Compare candidate models (baselines included) with walk-forward
+       validation on the training rows only, and select the lowest RMSE.
+    4. Report every model on the untouched holdout.
+    5. Refit the selected model on all rows and forecast ``horizon`` steps
+       beyond the last observation.
+    """
+
+    if test_size <= 0:
+        raise ValueError("test_size must be greater than zero.")
+
+    if horizon <= 0:
+        raise ValueError("horizon must be greater than zero.")
 
     validation_report = validate_dataframe(
         df,
         timestamp_column=timestamp_column,
+        target_column=target_column,
+        min_rows=FEATURE_WARMUP_ROWS + MIN_TRAINING_ROWS + test_size,
+    )
+
+    if not validation_report.passed:
+        raise ValueError(" ".join(validation_report.issues))
+
+    series = prepare_series(
+        df,
+        timestamp_column=timestamp_column,
+        target_column=target_column,
     )
 
     feature_df = create_features(
-        df,
+        series,
         target_column=target_column,
         timestamp_column=timestamp_column,
     )
@@ -58,26 +97,34 @@ def run_forecast_pipeline(
     split = split_time_series(
         X,
         y,
-        test_size=30,
+        test_size=test_size,
     )
 
-    training_result = train_random_forest(
-        split.X_train,
-        split.y_train,
-        TrainerConfig(),
-    )
+    candidates = forecasters or build_default_forecasters(target_column)
+    backtest_splits = make_backtest_splits(split.X_train, split.y_train)
 
-    evaluation = evaluate_model(
-        model=training_result.model,
-        model_name="random_forest",
-        X_test=split.X_test,
-        y_test=split.y_test,
-    )
+    backtest = [
+        backtest_forecaster(forecaster, backtest_splits) for forecaster in candidates
+    ]
+    selected_model = select_best_model(backtest).model_name
+    selected = next(f for f in candidates if f.name == selected_model)
 
-    predictions = generate_predictions(
-        model=training_result.model,
-        X=split.X_test,
-    )
+    holdout: list[ModelEvaluation] = []
+    holdout_predictions: dict[str, pd.Series] = {}
+
+    for forecaster in candidates:
+        forecaster.fit(split.X_train, split.y_train)
+        holdout_predictions[forecaster.name] = forecaster.predict(split.X_test)
+        holdout.append(
+            evaluate_predictions(
+                forecaster.name,
+                split.y_test,
+                holdout_predictions[forecaster.name],
+            )
+        )
+
+    predictions = holdout_predictions[selected_model]
+    evaluation = next(e for e in holdout if e.model_name == selected_model)
 
     forecast = pd.DataFrame(
         {
@@ -90,10 +137,26 @@ def run_forecast_pipeline(
         }
     )
 
+    selected.fit(X, y)
+
+    future_forecast = recursive_forecast(
+        selected,
+        history=series,
+        target_column=target_column,
+        timestamp_column=timestamp_column,
+        feature_columns=list(X.columns),
+        horizon=horizon,
+        step=infer_step(series, timestamp_column),
+    )
+
     return ForecastPipelineResult(
         validation_report=validation_report,
-        training_result=training_result,
+        backtest=backtest,
+        holdout=holdout,
+        selected_model=selected_model,
         evaluation=evaluation,
         predictions=predictions,
         forecast=forecast,
+        future_forecast=future_forecast,
+        train_rows=len(split.X_train),
     )
